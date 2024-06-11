@@ -3,21 +3,20 @@
 //
 // Le zone di memoria associate ad un eseguibile sono: stack, heap, variabili globali, costanti e
 // codice. Per esempio:
+// //VARIABILE GLOBALE
+// static R: usize = 4;
+// //COSTANTE
+// const PI: f32 = 3.14;
 //
-//VARIABILE GLOBALE E COSTANTE
-const PI: f32 = 3.14;
-
-pub fn main() {
-    //HEAP
-    let mut computed: Vec<f32> = Vec::new();
-    //STACK
-    let r = 4;
-    let area = PI * (r * r) as f32;
-
-    //CODICE
-    computed.push(area);
-}
-
+// pub fn main() {
+//     //HEAP
+//     let mut computed: Vec<f32> = Vec::new();
+//     //STACK
+//     let area = PI * (R * R) as f32;
+//
+//     //CODICE
+//     computed.push(area);
+// }
 // Domanda 2: Sia dato un primo valore di tipo std::cell::Cell<T> ed un secondo valore di tipo std::cell::RefCell<T>
 // (dove T fa riferimento alla medesima entità). Si indichino le differenze tra i due e le modalità di
 // occupazione della memoria (quantità, zone di memoria, ecc.).
@@ -154,9 +153,43 @@ impl<T: Clone> Subscription<T> {
 
 }
 
+use std::thread::{ sleep, spawn };
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
+
+
+pub fn main() {
+    let dispatcher = Arc::new(Mutex::new(Dispatcher::new()));
+    let sender_clone = Arc::clone(&dispatcher);
+   
+    let sender_handle = spawn(move || {
+        println!("Sender is sending the message");
+        let mut sender_clone = sender_clone.lock().unwrap();
+        let msg = Msg {
+            message: "Hi from the sender!".to_string()
+        };
+        sender_clone.dispatch(msg);
+    });
+
+    
+
+    let receiver_handle = spawn(move || {  
+        let mut dispatcher = dispatcher.lock().unwrap();
+        let sub = dispatcher.subscribe();
+        println!("Receiver has been sat up");
+        if let Some(msg) = sub.read() {
+            println!("{}",msg.message);
+        }
+    }); 
+
+    let _ = sender_handle.join();
+    let _ = receiver_handle.join();
+}
+
 #[cfg(test)]
 mod test {
-    use std::thread::{ spawn, sleep };
+    use std::thread::{ sleep, spawn };
     use std::sync::Arc;
     use crate::{ Msg, Dispatcher };
     use std::sync::Mutex;
@@ -170,16 +203,20 @@ mod test {
         let receiver_handle = spawn(move || {
             let mut dispatcher = dispatcher.lock().unwrap();
             let sub = dispatcher.subscribe();
+            println!("Receiver has been sat up");
             if let Some(msg) = sub.read() {
                 println!("{}",msg.message);
             }
         });
+
+        sleep(Duration::from_millis(4000));
 
         let sender_handle = spawn(move || { 
             let mut sender_clone = sender_clone.lock().unwrap();
             let msg = Msg {
                 message: "Hi from the sender!".to_string()
             };
+            println!("Sender is sending the message");
             sender_clone.dispatch(msg);
         });
 

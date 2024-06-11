@@ -1305,15 +1305,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "psm"
-version = "0.1.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5787f7cda34e3033a72192c018bc5883100330f362ef279a8cbccfce8bb4e874"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "quick-xml"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1535,20 +1526,6 @@ name = "soluzione_temi_malnati"
 version = "0.1.0"
 dependencies = [
  "cargo-watch",
- "stacker",
-]
-
-[[package]]
-name = "stacker"
-version = "0.1.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c886bd4480155fd3ef527d45e9ac8dd7118a898a46530b7b94c3e21866259fce"
-dependencies = [
- "cc",
- "cfg-if 1.0.0",
- "libc",
- "psm",
- "winapi 0.3.9",
 ]
 
 [[package]]
