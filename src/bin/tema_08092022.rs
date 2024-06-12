@@ -104,7 +104,7 @@ use std::ops::DerefMut;
 
 #[derive(Clone)]
 struct Msg<T: Clone> {
-    message: T
+    pub message: T
 }
 
 struct Dispatcher<T: Clone + DerefMut>{
@@ -155,72 +155,46 @@ impl<T: Clone> Subscription<T> {
 
 use std::thread::{ sleep, spawn };
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::RwLock;
 use std::time::Duration;
 
 
 pub fn main() {
-    let dispatcher = Arc::new(Mutex::new(Dispatcher::new()));
-    let sender_clone = Arc::clone(&dispatcher);
-   
-    let sender_handle = spawn(move || {
-        println!("Sender is sending the message");
-        let mut sender_clone = sender_clone.lock().unwrap();
-        let msg = Msg {
-            message: "Hi from the sender!".to_string()
-        };
-        sender_clone.dispatch(msg);
-    });
+    let dispatcher = Arc::new(RwLock::new(Dispatcher::new()));
+    let mut receivers_handles = vec![];
 
-    
+    for i in 0..5 {
+        let mut dispatcher_clone: Arc<RwLock<Dispatcher<_>>> = Arc::clone(&dispatcher);
+        let mut dispatcher_unlocked = dispatcher_clone.write().unwrap();
+        let sub = dispatcher_unlocked.subscribe();
+        let handle = spawn(move || { 
+            println!("Started receiver {}",i);
+            loop {
+                if let Some(msg) = sub.read() {
+                    println!("{}",msg.message);
+                }
+            }
+        });
+        receivers_handles.push(handle);
+    }
 
-    let receiver_handle = spawn(move || {  
-        let mut dispatcher = dispatcher.lock().unwrap();
-        let sub = dispatcher.subscribe();
-        println!("Receiver has been sat up");
-        if let Some(msg) = sub.read() {
-            println!("{}",msg.message);
-        }
-    }); 
+    let msg = Msg {
+        message: "Hi from the main thread!".to_string()
+    };
+    let mut dispatcher = dispatcher.write().unwrap();
+    println!("Started main sender");
+    dispatcher.dispatch(msg);
 
-    let _ = sender_handle.join();
-    let _ = receiver_handle.join();
+    for handle in receivers_handles {
+        handle.join();
+    }
+
 }
 
 #[cfg(test)]
 mod test {
-    use std::thread::{ sleep, spawn };
-    use std::sync::Arc;
-    use crate::{ Msg, Dispatcher };
-    use std::sync::Mutex;
-    use std::time::Duration;
-
     #[test]
     fn simple_test() {
-        let dispatcher = Arc::new(Mutex::new(Dispatcher::new()));
-        let sender_clone = Arc::clone(&dispatcher);
-        
-        let receiver_handle = spawn(move || {
-            let mut dispatcher = dispatcher.lock().unwrap();
-            let sub = dispatcher.subscribe();
-            println!("Receiver has been sat up");
-            if let Some(msg) = sub.read() {
-                println!("{}",msg.message);
-            }
-        });
 
-        sleep(Duration::from_millis(4000));
-
-        let sender_handle = spawn(move || { 
-            let mut sender_clone = sender_clone.lock().unwrap();
-            let msg = Msg {
-                message: "Hi from the sender!".to_string()
-            };
-            println!("Sender is sending the message");
-            sender_clone.dispatch(msg);
-        });
-
-        let _ = sender_handle.join();
-        let _ = receiver_handle.join();
     }
 }
