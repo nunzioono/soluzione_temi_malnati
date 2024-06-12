@@ -129,17 +129,48 @@ impl ExecutionLimiter {
     }
 
     pub fn execute<R: Sized>(&mut self, f: impl Fn() -> Result<R, ()>) -> Option<R> {
-        let _lock = self.condvar.wait_while(self.lock.lock().unwrap(), |n_threads_active| *n_threads_active > self.n);
-        *self.lock.lock().unwrap() += 1;
+        let mut current_n_threads = self.condvar.wait_while(self.lock.lock().unwrap(), |n_threads_active| *n_threads_active > self.n).unwrap();
+        *current_n_threads += 1;
         if let Ok(result) = f() {
-            *self.lock.lock().unwrap() -= 1;
+            *current_n_threads -= 1;
             return Some(result);
         } else {
-            *self.lock.lock().unwrap() -= 1;
+            *current_n_threads -= 1;
             return None;
         }
     }
 
 }
 
-pub fn main() {}
+use std::sync::Arc;
+use std::thread::spawn;
+use rand::{Rng, thread_rng};
+
+pub fn main() {
+    let mut limiter = Arc::new(Mutex::new(ExecutionLimiter::new(3)));
+    let function = || {
+        let mut rng = thread_rng();
+        let random = rng.gen_range(0..4);
+        if random > 0 {
+            return Ok(random);
+        } else {
+            return Err(());
+        }
+    };
+    let mut handles = vec![];
+
+    for _ in 0..5 {
+        let mut mut_clone = Arc::clone(&limiter);
+        let handle = spawn(move || { 
+            let result = mut_clone.lock().unwrap().execute(function);
+            if let Some(result) = result {
+                println!("{}",result);
+            }
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join();
+    }
+}
