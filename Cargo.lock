@@ -1526,6 +1526,7 @@ name = "soluzione_temi_malnati"
 version = "0.1.0"
 dependencies = [
  "cargo-watch",
+ "rand",
 ]
 
 [[package]]
