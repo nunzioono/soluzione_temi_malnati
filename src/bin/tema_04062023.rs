@@ -24,7 +24,7 @@
 //presentato ovvero una struttura dati che necessita di fornire a più di un thread un riferimento
 //a se stessa e ognuna dei riferimenti forti (Arc::clone) contiene internamente un puntatore a se
 //stessa, prevenendo cosi' la deallocazione della struttura.
-use std::rc::{ Rc, Weak };
+use std::{rc::{ Rc, Weak }, sync::{Arc, Condvar, Mutex}, thread::spawn};
 
 fn weak_example() {
     let rc = Rc::new(5);
@@ -37,69 +37,119 @@ fn weak_example() {
     dbg!("{} {}",Rc::strong_count(&rc),Weak::weak_count(&weak));
 }
 
-//Domanda 2: Implementare una Ranking barrier
-use std::thread::{ spawn };
-use std::sync::{ Arc, Condvar, Mutex };
+// Domanda 2: Una barriera è un costrutto di sincronizzazione usato per regolare l'avanzamento relativo della computazione di più thread. 
+// All'atto della costruzione di questo oggetto, viene indicato il numero N di thread coinvolti. 
+
+// Non è lecito creare una barriera che coinvolga meno di 2 thread. 
+
+// La barriera offre un solo metodo, wait(), il cui scopo è bloccare temporaneamente l'esecuzione del thread che lo ha invocato, non ritornando fino a che non sono giunte 
+// altre N-1 invocazioni dello stesso metodo da parte di altri thread: quando ciò succede, la barriera si sblocca e tutti tornano. Successive invocazioni del metodo wait() 
+// hanno lo stesso comportamento: la barriera è ciclica.
+
+// Attenzione a non mescolare le fasi di ingresso e di uscita!
+
+// Una RankingBarrier è una versione particolare della barriera in cui il metodo wait() restituisce un intero che rappresenta l'ordine di arrivo: il primo thread ad avere 
+// invocato wait() otterrà 1 come valore di ritorno, il secondo thread 2, e così via. All'inizio di un nuovo ciclo, il conteggio ripartirà da 1.
+
+// Si implementi la struttura dati RankingBarrier a scelta nei linguaggi Rust o C++ '11 o successivi.
 
 struct BarrierState {
-    arrival: usize,
-    waiting: usize
+    size: usize,
+    arrived: Vec<usize>,
+    ready: bool
+}
+
+impl BarrierState {
+
+    pub fn new(size: usize) -> Option<Self> {
+        if size < 2 {
+            return None;
+        }
+
+        Some(BarrierState { size, arrived: Vec::new(), ready: false })
+    }
+
+    pub fn arrive(&mut self, id: usize) -> bool {
+        if self.arrived.len() < self.size {
+            self.arrived.push(id);
+            self.ready = self.arrived.len() == self.size;
+            return self.ready;
+        }
+        return false;
+    }
+
+    pub fn depart(&mut self, id: usize) -> Option<usize> {
+        if self.ready {
+            if self.arrived.len() > 0 {
+                return self.arrived.iter().position(|arrival| *arrival == id);
+            }
+            self.arrived.clear();
+            self.ready = false;
+        }
+        return None;
+    }
+
 }
 
 struct RankingBarrier {
-    n: usize,
-    condvar: Condvar,
-    state: Mutex<BarrierState>
+    lock: Mutex<BarrierState>,
+    condvar: Condvar
 }
 
 impl RankingBarrier {
-    
-    pub fn new(n: usize) -> RankingBarrier {
-        let arrival = 0;
-        let waiting = 0;
-        let state = BarrierState {
-            arrival,
-            waiting
-        };
-        let condvar = Condvar::new();
-        RankingBarrier {
-            n,
-            condvar,
-            state: Mutex::new(state)
+
+    pub fn new(size: usize) -> Option<RankingBarrier> {
+        let state = BarrierState::new(size);
+        if let Some(state) = state {
+            return Some(RankingBarrier {
+                lock: Mutex::new(state),
+                condvar: Condvar::new()
+            });
+        } else {
+            return None;
         }
     }
 
-    pub fn wait(&self, i: usize) -> usize { 
-        let mut lock = self.state.lock().unwrap();
-        let local_arrival = lock.arrival;
-        lock.arrival += 1;
-        lock.waiting += 1;
-        let _guard = self.condvar.wait_while(lock, |state| state.waiting  < self.n - 1).unwrap();
-        self.condvar.notify_all();
-        local_arrival
+    pub fn wait(&self) -> usize {
+        let id = {
+            let mut state = self.lock.lock().unwrap();
+            let id = state.arrived.len();
+            let _ = state.arrive(id);
+            id
+        };
+        let arrival_index = {
+            let mut guard = self.condvar.wait_while(
+            self.lock.lock().unwrap(),
+            |state| {
+                !state.ready
+            }).unwrap();
+            let arrival = guard.depart(id).unwrap() + 1;
+            self.condvar.notify_all();
+            arrival
+        };
+        return arrival_index;
     }
 
 }
 
 fn ranking_barrier() {
-   let n = 5;
-   let mut handles = vec![];
-   let ranking_barrier = Arc::new(RankingBarrier::new(n));
-   
-   for i in 0..n {
-       let mut ranking_barrier_clone: Arc<RankingBarrier> = Arc::clone(&ranking_barrier);
-       let handle = spawn(move || {
-           println!("Waiting for barrier to open from thread {}",i);
-           let arrival = ranking_barrier_clone.wait(i);
-           println!("Thread {} arrived at {}", i, arrival);
+    let barrier = Arc::new(RankingBarrier::new(4).unwrap());
+    let mut handles = vec![];
+
+    for i in 0..4 {
+        let barrier_clone = Arc::clone(&barrier);
+        let handle = spawn(move || {
+            println!("THREAD {}: Ready to operate", i);
+            let arrival_order = barrier_clone.wait();
+            println!("THREAD {}: Returned after arriving {}", i, arrival_order);
+
         });
-        handles.push(handle);
-   }
+        handles.push(handle);        
+    }
 
-   for handle in handles {
-       let _ = handle.join();
-   }
-
+    for handle in handles {
+        let _ = handle.join();
+    }
 }
 
 //Domanda 3: Nel caso di programmazione concorrente in Rust e memoria condivisa quali sono i
