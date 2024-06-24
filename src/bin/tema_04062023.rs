@@ -52,10 +52,11 @@ fn weak_example() {
 // invocato wait() otterrà 1 come valore di ritorno, il secondo thread 2, e così via. All'inizio di un nuovo ciclo, il conteggio ripartirà da 1.
 
 // Si implementi la struttura dati RankingBarrier a scelta nei linguaggi Rust o C++ '11 o successivi.
-
+#[derive(Debug)]
 struct BarrierState {
     size: usize,
     arrived: Vec<usize>,
+    checked: Vec<usize>,
     ready: bool
 }
 
@@ -66,7 +67,7 @@ impl BarrierState {
             return None;
         }
 
-        Some(BarrierState { size, arrived: Vec::new(), ready: false })
+        Some(BarrierState { size, arrived: Vec::new(), checked: Vec::new(), ready: false })
     }
 
     pub fn arrive(&mut self, id: usize) -> bool {
@@ -80,11 +81,16 @@ impl BarrierState {
 
     pub fn depart(&mut self, id: usize) -> Option<usize> {
         if self.ready {
-            if self.arrived.len() > 0 {
-                return self.arrived.iter().position(|arrival| *arrival == id);
+            let arrived = self.arrived.iter().position(|el| {*el == id});
+            if let Some(arrived) = arrived {
+                self.checked.push(arrived);
+                if self.checked.len() == self.arrived.len() {
+                    self.arrived.clear();
+                    self.checked.clear();
+                    self.ready = false;
+                }
+                return Some(arrived);
             }
-            self.arrived.clear();
-            self.ready = false;
         }
         return None;
     }
@@ -117,17 +123,20 @@ impl RankingBarrier {
             let _ = state.arrive(id);
             id
         };
-        let arrival_index = {
+        let arrival = {
             let mut guard = self.condvar.wait_while(
             self.lock.lock().unwrap(),
             |state| {
                 !state.ready
             }).unwrap();
-            let arrival = guard.depart(id).unwrap() + 1;
-            self.condvar.notify_all();
-            arrival
+            if let Some(arrival) = guard.depart(id) {
+                self.condvar.notify_all();
+                arrival + 1
+            } else {
+                0
+            }
         };
-        return arrival_index;
+        return arrival;
     }
 
 }
@@ -141,10 +150,29 @@ fn ranking_barrier() {
         let handle = spawn(move || {
             println!("THREAD {}: Ready to operate", i);
             let arrival_order = barrier_clone.wait();
-            println!("THREAD {}: Returned after arriving {}", i, arrival_order);
-
+            if arrival_order != 0 {
+                println!("THREAD {}: Returned after arriving {}", i, arrival_order);
+            }
         });
-        handles.push(handle);        
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    handles = vec![];
+
+    for i in 0..4 {
+        let barrier_clone = Arc::clone(&barrier);
+        let handle = spawn(move || {
+            println!("THREAD {}: Ready to operate", i);
+            let arrival_order = barrier_clone.wait();
+            if arrival_order != 0 {
+                println!("THREAD {}: Returned after arriving {}", i, arrival_order);
+            }
+        });
+        handles.push(handle);
     }
 
     for handle in handles {
