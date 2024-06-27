@@ -116,7 +116,7 @@ impl<T: Send + Copy> DelayedQueue<T> {
         let nearest = queue.first();
         if let Some(nearest) = nearest {
             if nearest.1 < Instant::now() {
-                let mut queue = self.condvar.wait_while(self.queue.lock().unwrap(), |_| nearest.1.duration_since(now) <= Duration::from_secs(0));
+                let _queue = self.condvar.wait_while(self.queue.lock().unwrap(), |_| nearest.1.duration_since(now) <= Duration::from_secs(0));
             }
             let item = queue.remove(0);
             return Some(item.0);
@@ -125,14 +125,13 @@ impl<T: Send + Copy> DelayedQueue<T> {
         }
     }
 
-    pub fn size(&self) -> usize {
+    pub fn _size(&self) -> usize {
         let queue = self.queue.lock().unwrap();
         return queue.len();
     }
 }
 
 fn future_instant(seconds_delay: u64) -> Instant {
-    use std::time::Duration;
     let duration = Duration::from_secs(seconds_delay);
     return Instant::now() + duration;
 }
@@ -146,7 +145,7 @@ pub fn main() {
         delayed_queue.offer(item.0, item.1);
     }
 
-    for i in 0..5 {
+    for _ in 0..5 {
         let item = delayed_queue.take();
         if let Some(item) = item {
             println!("{}",item);
