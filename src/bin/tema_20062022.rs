@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 //Domanda 1: Si definisca il concetto di smart pointer, quindi si fornisca un esempio (Rust o C++)
 //che ne evidenzi il ciclo di vita.
 //
@@ -36,15 +37,15 @@
 //struttura dati rappresentante il mittente e il destinatario per il canale, sotto forma di
 //strutture rust Sender e Receiver. Queste implementano i metodi che verranno effettivamente usati
 //per la comunicazione. Il Sender deve essere trasferito al thread che invierà i messaggi mentre il
-//Receiver non può essere "mosso" (la ownership rimane al) dal thread che invoca la funzione di
-//creazione del canale. La differenza sostanziale tra i due metodi di creazione dei canali sta
-//nella capacità dei canali stessi che in qualche modo influenza la frequenza con cui mittente e
+//Receiver non può essere "mosso" dal thread che invoca la funzione di creazione del canale.
+//La differenza sostanziale tra i due metodi di creazione dei canali sta nella capacità
+//dei canali stessi che in qualche modo influenza la frequenza con cui mittente e
 //destinatario dovranno interagire prima di comunicare nuovamente. Mentre la funzione channel()
 //consente di conservare un numero illimitato di messaggi e quindi consente al Sender di inviare
 //messaggi senza preoccuparsi che il destinatario li abbia ricevuti, la funzione sync_channel()
 //richiede alla creazione di passarvi un parametro numerico che indicherà la capacità del canale.
 //Quando il sender nel secondo caso invia un nuovo messaggio superando la capacità del canale
-//specificata esso entra in attesa che il canale si svuoti e che quindi data la capacità n che
+//specificata, esso entra in attesa che il canale si svuoti e che quindi data la capacità n che
 //almeno un messaggio venga letto ogni n mandati. E' possibile implementare un canale di rendevouz
 //passando a sync_channel() come parametro 0. Facendo ciò il sender prima di inviare ogni messaggio
 //deve controllare che il messaggio precedente sia stato letto, altrimenti entra in blocco fino a
@@ -106,7 +107,7 @@
 // Domanda 4: Un paradigma frequentemente usato nei sistemi reattivi e costituito dall'astrazione detta Looper. 
 // Quando viene creato, un Looper crea una coda di oggetti generici di tipo Message ed un thread. 
 // II thread attende - senza consumare cicli di CPU - che siano presenti messaggi nella coda, Ii 
-// estrae a uno a uno nell'ordine di arrivo, e Ii elabora. II costruttore di Looper riceve due parametri, 
+// estrae a uno a uno nell'ordine di arrivo, e li elabora. II costruttore di Looper riceve due parametri, 
 // entrambi di tipo (puntatore a) funzione: process( ... ) e cleanup(). La prim a e una funzione
 // responsabile di elaborare i singoli messaggi ricevuti attraverso la coda; tale funzione accetta un
 // unico parametro in ingresso di tipo Message e non ritorna nulla; La seconda e funzione priva di 
@@ -120,59 +121,90 @@
 // Si implementi, utilizzando ii linguaggio Rust o C++, tale astrazione tenendo canto che i suoi metodi 
 // dovranno essere thread-safe.
 //
-use std::thread::{spawn, JoinHandle};
-use std::sync::mpsc::{channel, Sender, Receiver};
+use std::sync::{Arc, Condvar, Mutex};
+use std::sync::mpsc::{self, Sender, Receiver};
+use std::thread::{self, sleep};
+use std::time::Duration;
 
-struct Message {
-    pub content: String
+struct Looper<Msg: Send + Sync> {
+    sender: Sender<Msg>,
+    handle: Option<thread::JoinHandle<()>>,
+    stop_signal: Arc<(Mutex<bool>, Condvar)>
 }
 
-struct Looper {
-    process: fn(Message)->(),
-    cleanup: fn()->(),
-    sender: Sender<Message>,
-    handle: JoinHandle<()>
-}
+impl<Msg: Send + Sync + 'static> Looper<Msg> {
+    fn new(process: fn(Msg) -> (), cleanup: fn() -> ()) -> Looper<Msg> {
+        let (sender, receiver): (Sender<Msg>, Receiver<Msg>) = mpsc::channel();
+        let stop_signal = Arc::new((Mutex::new(false), Condvar::new()));
+        let stop_signal_clone = Arc::clone(&stop_signal);
+        let receiver = Arc::new(Mutex::new(receiver));
 
-impl Looper {
-    
-    pub fn new(process: fn(Message)->(), cleanup: fn()->()) -> Looper { 
-        let (sender, receiver) = channel();
-        let handle: JoinHandle<_> = spawn(move || {
-            loop {
-                let message = receiver.recv();
-                if let Ok(message) = message {
-                    process(message);
+        let handle = thread::spawn(move || {
+            Looper::start_loop(receiver, process, cleanup, stop_signal_clone);
+        });
+
+        Looper {
+            sender,
+            handle: Some(handle),
+            stop_signal
+        }
+    }
+
+    pub fn send(&self, msg: Msg) -> Result<(), Box<dyn std::error::Error>>{
+        Ok(self.sender.send(msg)?)
+    }
+
+    fn start_loop(receiver: Arc<Mutex<Receiver<Msg>>>, process: fn(Msg) -> (), cleanup: fn() -> (), stop_signal: Arc<(Mutex<bool>, Condvar)>)
+    {
+        loop {
+            let msg = receiver.lock().unwrap().recv_timeout(Duration::from_millis(100));
+            if let Ok(msg) = msg {
+                process(msg);                
+            } else {
+                break;
+            }
+
+            {
+                let result = stop_signal.1.wait_timeout_while(stop_signal.0.lock().unwrap(), Duration::from_millis(100), |stop| {*stop == true});
+                let (end, error) = result.unwrap();
+                if !error.timed_out() && *end {
+                    break;
                 }
             }
-        });
-        let looper = Looper {
-            process,
-            cleanup,
-            sender,
-            handle
-        };    
+        }
 
-        looper
-   }
-
-    pub fn send(&mut self, msg: Message) {
-        self.sender.send(msg);
+        cleanup();
     }
-
-    pub fn quit(&self) {
-        (self.cleanup)();
-        
-    }
-
 }
 
-pub fn main() {
-   let process = |message: Message| {
-        println!("Message content is {}",message.content);
-   };
-   let cleanup = || { println!("Quitting...")};
-   let mut looper = Looper::new(process, cleanup);
-   let _ = looper.send(Message {content: "hello, world!".to_string()});
-   looper.quit();
+impl<Msg: Send + Sync> Drop for Looper<Msg> {
+    fn drop(&mut self) {
+        *self.stop_signal.0.lock().unwrap() = true;
+        self.stop_signal.1.notify_all();
+        if let Some(handle) = self.handle.take() {
+            handle.join().unwrap();
+        }
+    }
+}
+
+// Funzione di esempio per l'elaborazione dei messaggi
+fn process_message<Msg: Sync + Debug>(msg: Msg) {
+    println!("Processing Msg: {:?}", msg);
+}
+
+// Funzione di esempio per la pulizia
+fn cleanup() {
+    println!("Cleaning up...");
+}
+
+fn main() {
+    let looper = Looper::new(process_message, cleanup);
+
+    // Invia messaggi al looper
+    let _ = looper.send("Message 1");
+    let _ = looper.send("Message 2");
+
+    // Il looper sarà automaticamente pulito quando esce dall'ambito o viene richiamata std::mem::drop(looper)
+    // Attende un po' per vedere l'elaborazione
+    sleep(Duration::from_secs(1));
 }
