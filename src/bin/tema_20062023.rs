@@ -14,9 +14,9 @@
     le strutture quando il conteggio di weak arriva a 0.
 */
 
-use std::{collections::VecDeque, fmt::Debug, rc::{Rc, Weak}, sync::{Arc, Condvar, Mutex, RwLock}, thread::spawn};
+use std::{fmt::Debug, rc::{Rc, Weak}, sync::{Arc, Condvar, Mutex}, thread::{sleep, spawn}, time::Duration};
 
-fn cyclic() {
+fn _cyclic() {
     struct Node<T: Debug> {
         value: T,
         next: Option<Weak<Node<T>>>
@@ -98,7 +98,8 @@ fn cyclic() {
 */
 
 /*
-    Domanda 4: La struct MpMcChannel<E: Send> è una implementazione di un canale su cui possono scrivere molti produttori e da cui possono attingere valori molti consumatori.
+    Domanda 4: La struct MpMcChannel<E: Send> è una implementazione di un canale su cui possono scrivere molti produttori e
+    da cui possono attingere valori molti consumatori.
     Tale struttura offre i seguenti metodi:
 
     new(n: usize) -> Self: crea un'instanza del canale basato su un buffer circolare di n elementi;
@@ -126,158 +127,149 @@ fn cyclic() {
     -------------------------------------------------------------------
     
 */
-struct CircularBuffer<E: Send> {
-    v: Vec<Option<E>>,
+
+struct CircularBuffer<T: Clone> {
+    buffer: Vec<T>,
+    n: usize,
     size: usize,
-    head: usize,
-    tail: usize,
-    closed: bool,
+    closed: bool
 }
 
-impl<E: Send> CircularBuffer<E> {
-    fn new(n: usize) -> Self {
-        let mut v : Vec<Option<E>> = Vec::with_capacity(n);
-        for i in 0..n {
-            v.push(None);
+impl<T: Clone> CircularBuffer<T> {
+    pub fn new(n: usize) -> CircularBuffer<T> {
+        CircularBuffer {
+            buffer: vec![],
+            n,
+            size: 0,
+            closed: false
         }
-
-        Self{ v, size: 0, head: 0, tail: 0, closed: false }
     }
 
-    fn is_empty(&self) -> bool {
-        return self.size == 0;
+    pub fn put(&mut self, el: T) -> bool {
+        if self.closed || self.size == self.n {
+            return false;
+        }
+        self.buffer.push(el);
+        self.size = self.size + 1;
+        return true;
     }
 
-    fn is_full(&self) -> bool {
-        return self.size == self.v.len();
+    pub fn get(&mut self) -> Option<T> {
+        if self.buffer.is_empty() {
+            return None;
+        }
+        let el = self.buffer.pop();
+        if el.is_some() {
+            self.size = self.size - 1;
+        }
+        el
     }
 
-    fn push(&mut self, elem: E) {
-        self.v[self.tail] = Some(elem);
-        self.tail = (self.tail + 1) % self.v.len();
-        self.size += 1;
-    }
-    
-    fn pop(&mut self) -> E {
-        let ret = self.v[self.head].take();
-        self.head = (self.head + 1) % self.v.len();
-        self.size -= 1;
-        ret.unwrap()
+    pub fn len(&self) -> usize {
+        self.size
     }
 
-    fn is_closed(&self) -> bool {
+    pub fn close(&mut self) -> Option<()> {
+        if self.closed {
+            return None;
+        }
+        self.closed = true;
+        Some(())
+    }
+
+    pub fn is_closed(&self) -> bool {
         self.closed
     }
 
-    fn close(&mut self) {
-        self.closed = true;
-    }
 }
 
-struct MpMcChannel<E: Send> {
-    shared_data: Arc<(Mutex<CircularBuffer<E>>, Condvar)>
+struct MpMcChannel<E: Sync + Clone> {
+    lock: Mutex<CircularBuffer<E>>,
+    condvar: Condvar,
 }
 
-impl<E: Send> MpMcChannel<E> {
+impl <E: Sync + Clone> MpMcChannel<E> {
 
-    fn new(n: usize) -> Self {
-        let cb = CircularBuffer::new(n);
-        Self{ shared_data: Arc::new((Mutex::new(cb), Condvar::new())) }
-    }
-
-    fn send(&self, e: E) -> Option<()> {
-        let (mutex, cv) = &*self.shared_data;
-        let mut cb_guard = cv.wait_while(mutex.lock().unwrap(), |cb| cb.is_full() && !cb.is_closed()).unwrap();
-        
-        if cb_guard.is_closed() {
-         // the channel was closed while waiting or it was already closed, so don't insert
-         None
+    pub fn new(n: usize) -> MpMcChannel<E> {
+        MpMcChannel {
+            lock: Mutex::new(CircularBuffer::new(n)),
+            condvar: Condvar::new(),
         }
-        
-        else {
-            // the channel was not closed so the wait ended because buffer is no longer full, so insert and notify
-            cb_guard.push(e);
-            cv.notify_all();
+    }
+
+    pub fn send(&self, el: E) -> Option<()> {
+        let mut guard = self.condvar
+        .wait_timeout_while(
+            self.lock.lock().unwrap(),
+        Duration::from_millis(100),
+         |buffer| buffer.is_closed() || buffer.len() == buffer.n
+        ).unwrap();
+        if guard.1.timed_out() {
+            return None;
+        }
+        if guard.0.put(el) {
             Some(())
-        }
-    }
-
-    fn recv(&self) -> Option<E> {
-        let (mutex, cv) = &*self.shared_data;
-        let mut cb_guard = cv.wait_while(mutex.lock().unwrap(), |cb| cb.is_empty() && !cb.is_closed()).unwrap();
-
-        if cb_guard.is_empty() {
-            // means that !cb.is_closed() is false, so the channel is closed and there is no more data to read
-            None
         } else {
-
-        // means that there is some data to read, so we don't care if the channel is already closed
-        // retrieve data and notify so that if someone is waiting to write he will be woken up
-        let ret = cb_guard.pop();
-            cv.notify_all();
-            Some(ret)
+            None
         }
     }
 
-    fn shutdown(&self) -> Option<()> {
-        let (mutex, cv) = &*self.shared_data;
-        let mut cb_guard = mutex.lock().unwrap();
-        cb_guard.close();
-        cv.notify_all();
-        return Some(());
-    }
-}
-
-fn mpmc_channel() {
-    let mpmc_channel = Arc::new(RwLock::new(MpMcChannel::<usize>::new(4)));
-    let mut receivers_handles = vec![]; 
-    let mut senders_handles = vec![];
-
-    for i in 0..10 {        
-        let mpmc_channel_clone = Arc::clone(&mpmc_channel);
-        let handle = spawn(move || {
-            let mut guard = mpmc_channel_clone.write().unwrap();
-            println!("Sender {}: READY", i);
-            let res = guard.send(i);
-            if res.is_some() {
-                println!("Sender {}: SENT A MESSAGE TO ALL", i);
-            } else {
-                println!("Sender {}: UNABLE TO SEND THE MESSAGE", i);
-            }
-        });
-        senders_handles.push(handle);
+    pub fn recv(&self) -> Option<E> {
+        let mut guard = self.condvar
+        .wait_timeout_while(
+            self.lock.lock().unwrap(),
+        Duration::from_millis(100),
+         |buffer| buffer.len() == 0
+        ).unwrap();
+        if guard.1.timed_out() {
+            return None;
+        }
+        guard.0.get()
     }
 
-    for i in 0..10 {
-        let mpmc_channel_clone = Arc::clone(&mpmc_channel);
-        let handle = spawn(move || {
-            let guard = mpmc_channel_clone.read().unwrap();
-            println!("Receiver {}: READY",i);
-            let data = guard.recv();
-            if let Some(data) = data {
-                println!("Receiver {}: RECEIVED A MESSAGE FROM {}", i, data);
-            } else {
-                println!("Receiver {}: RECEIVED NOTHING", i);
-            }
-        });
-        receivers_handles.push(handle);
+    pub fn shutdown(&self) -> Option<()> {
+        let mut guard = self.condvar
+        .wait_while(
+            self.lock.lock().unwrap(),
+         |buffer| !buffer.closed && buffer.len() == 0
+        ).unwrap();
+        guard.close();
+        Some(())
     }
-
-
     
-    for (i, handle) in receivers_handles.into_iter().enumerate() {
-        let _ = handle.join();
-        println!("Receiver {}: CLOSED",i);
-    }
-
-    for (i, handle) in senders_handles.into_iter().enumerate() {
-        let _ = handle.join();
-        println!("Sender {}: CLOSED",i);
-    }
 }
-
 
 pub fn main() {
-    cyclic();
-    mpmc_channel();
+    let n = 5;
+    let channel: Arc<Mutex<MpMcChannel<usize>>> = Arc::new(Mutex::new(MpMcChannel::new(n)));
+    let mut handles = Vec::new();
+
+    for i in 0..n {
+        let channel = Arc::clone(&channel);
+        let handle = spawn(move || {
+            let guard = channel.lock().unwrap();
+            let _ = guard.shutdown();
+            let result = guard.send(i);
+            if result.is_some() {
+                println!("Sent: {:?}", i);
+            }
+        });
+        handles.push(handle);
+    }    
+
+    sleep(Duration::from_secs(1));
+
+    for _ in 0..n {
+        let channel = Arc::clone(&channel);
+        let handle = spawn(move || {
+            let guard = channel.lock().unwrap();
+            let el = guard.recv();
+            println!("Received: {:?}", el);
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        let _ = handle.join();
+    }
 }
