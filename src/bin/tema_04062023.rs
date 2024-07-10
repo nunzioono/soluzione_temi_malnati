@@ -52,131 +52,69 @@ fn weak_example() {
 // invocato wait() otterrà 1 come valore di ritorno, il secondo thread 2, e così via. All'inizio di un nuovo ciclo, il conteggio ripartirà da 1.
 
 // Si implementi la struttura dati RankingBarrier a scelta nei linguaggi Rust o C++ '11 o successivi.
-#[derive(Debug)]
+
 struct BarrierState {
     size: usize,
-    arrived: Vec<usize>,
-    checked: Vec<usize>,
-    ready: bool
+    arrived: usize,
 }
 
 impl BarrierState {
-
-    pub fn new(size: usize) -> Option<Self> {
-        if size < 2 {
-            return None;
+    pub fn new(size: usize) -> BarrierState {
+        BarrierState {
+            size,
+            arrived: 0,
         }
-
-        Some(BarrierState { size, arrived: Vec::new(), checked: Vec::new(), ready: false })
     }
-
-    pub fn arrive(&mut self, id: usize) -> bool {
-        if self.arrived.len() < self.size {
-            self.arrived.push(id);
-            self.ready = self.arrived.len() == self.size;
-            return self.ready;
-        }
-        return false;
-    }
-
-    pub fn depart(&mut self, id: usize) -> Option<usize> {
-        if self.ready {
-            let arrived = self.arrived.iter().position(|el| {*el == id});
-            if let Some(arrived) = arrived {
-                self.checked.push(arrived);
-                if self.checked.len() == self.arrived.len() {
-                    self.arrived.clear();
-                    self.checked.clear();
-                    self.ready = false;
-                }
-                return Some(arrived);
-            }
-        }
-        return None;
-    }
-
 }
 
 struct RankingBarrier {
-    lock: Mutex<BarrierState>,
-    condvar: Condvar
+    condvar: Condvar,
+    state: Mutex<BarrierState>
 }
 
 impl RankingBarrier {
-
-    pub fn new(size: usize) -> Option<RankingBarrier> {
-        let state = BarrierState::new(size);
-        if let Some(state) = state {
-            return Some(RankingBarrier {
-                lock: Mutex::new(state),
-                condvar: Condvar::new()
-            });
-        } else {
-            return None;
+    pub fn new(size: usize) -> RankingBarrier {
+        RankingBarrier {
+            condvar: Condvar::new(),
+            state: Mutex::new(BarrierState::new(size))
         }
     }
 
-    pub fn wait(&self) -> usize {
-        let id = {
-            let mut state = self.lock.lock().unwrap();
-            let id = state.arrived.len();
-            let _ = state.arrive(id);
-            id
-        };
-        let arrival = {
-            let mut guard = self.condvar.wait_while(
-            self.lock.lock().unwrap(),
-            |state| {
-                !state.ready
-            }).unwrap();
-            if let Some(arrival) = guard.depart(id) {
-                self.condvar.notify_all();
-                arrival + 1
-            } else {
-                0
-            }
-        };
-        return arrival;
-    }
+    pub fn wait(&self, i: usize) -> usize {
+        let arrival;
 
+        {
+            let mut guard = self.state.lock().unwrap();
+            arrival = guard.arrived;
+            println!("{} arrived {}", i, arrival);
+            guard.arrived += 1;
+        }
+
+        {
+            let _guard = self.condvar.wait_while(self.state.lock().unwrap(), |state| {
+                state.arrived < state.size
+            }).unwrap();
+        }        
+        self.condvar.notify_one();
+
+        arrival
+    }
 }
 
 fn ranking_barrier() {
-    let barrier = Arc::new(RankingBarrier::new(4).unwrap());
-    let mut handles = vec![];
+    let barrier = Arc::new(RankingBarrier::new(3));
+    let mut handles = Vec::new();
 
-    for i in 0..4 {
+    for i in 0..3 {
         let barrier_clone = Arc::clone(&barrier);
         let handle = spawn(move || {
-            println!("THREAD {}: Ready to operate", i);
-            let arrival_order = barrier_clone.wait();
-            if arrival_order != 0 {
-                println!("THREAD {}: Returned after arriving {}", i, arrival_order);
-            }
+            println!("{} returned {}", i, barrier_clone.wait(i));
         });
         handles.push(handle);
     }
 
     for handle in handles {
-        let _ = handle.join();
-    }
-
-    handles = vec![];
-
-    for i in 0..4 {
-        let barrier_clone = Arc::clone(&barrier);
-        let handle = spawn(move || {
-            println!("THREAD {}: Ready to operate", i);
-            let arrival_order = barrier_clone.wait();
-            if arrival_order != 0 {
-                println!("THREAD {}: Returned after arriving {}", i, arrival_order);
-            }
-        });
-        handles.push(handle);
-    }
-
-    for handle in handles {
-        let _ = handle.join();
+        handle.join().unwrap();
     }
 }
 
