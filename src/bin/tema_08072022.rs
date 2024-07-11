@@ -110,7 +110,9 @@
 // richieste.
 //
 //
-use std::sync::{ Mutex, Condvar };
+use std::sync::{ Mutex, Condvar, Arc };
+use std::thread::spawn;
+use rand::{Rng, thread_rng};
 
 struct ExecutionLimiter {
     lock: Mutex<usize>,
@@ -129,7 +131,11 @@ impl ExecutionLimiter {
     }
 
     pub fn execute<R: Sized>(&mut self, f: impl Fn() -> Result<R, ()>) -> Option<R> {
-        let mut current_n_threads = self.condvar.wait_while(self.lock.lock().unwrap(), |n_threads_active| *n_threads_active > self.n).unwrap();
+        let mut current_n_threads = self.condvar
+        .wait_while(
+            self.lock.lock().unwrap(),
+            |n_threads_active| *n_threads_active > self.n
+        ).unwrap();
         *current_n_threads += 1;
         if let Ok(result) = f() {
             *current_n_threads -= 1;
@@ -142,12 +148,8 @@ impl ExecutionLimiter {
 
 }
 
-use std::sync::Arc;
-use std::thread::spawn;
-use rand::{Rng, thread_rng};
-
 pub fn main() {
-    let mut limiter = Arc::new(Mutex::new(ExecutionLimiter::new(3)));
+    let limiter = Arc::new(Mutex::new(ExecutionLimiter::new(3)));
     let function = || {
         let mut rng = thread_rng();
         let random = rng.gen_range(0..4);
@@ -160,8 +162,8 @@ pub fn main() {
     let mut handles = vec![];
 
     for _ in 0..5 {
-        let mut mut_clone = Arc::clone(&limiter);
-        let handle = spawn(move || { 
+        let mut_clone = Arc::clone(&limiter);
+        let handle = spawn(move || {
             let result = mut_clone.lock().unwrap().execute(function);
             if let Some(result) = result {
                 println!("{}",result);
@@ -171,6 +173,6 @@ pub fn main() {
     }
 
     for handle in handles {
-        handle.join();
+        handle.join().unwrap();
     }
 }
