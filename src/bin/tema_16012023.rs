@@ -13,7 +13,7 @@
 // invocato wait() otterrà 1 come valore di ritorno, il secondo thread 2, e così via. All'inizio di un nuovo ciclo, il conteggio ripartirà da 1.
 
 // Si implementi la struttura dati RankingBarrier a scelta nei linguaggi Rust o C++ '11 o successivi.
-use std::thread::{ spawn };
+use std::thread::spawn;
 use std::sync::{ Arc, Condvar, Mutex };
 
 struct BarrierState {
@@ -44,7 +44,7 @@ impl RankingBarrier {
         }
     }
 
-    pub fn wait(&self, i: usize) -> usize { 
+    pub fn wait(&self, _i: usize) -> usize { 
         let mut lock = self.state.lock().unwrap();
         let local_arrival = lock.arrival;
         lock.arrival += 1;
@@ -62,7 +62,7 @@ pub fn main() {
    let ranking_barrier = Arc::new(RankingBarrier::new(n));
    
    for i in 0..n {
-       let mut ranking_barrier_clone: Arc<RankingBarrier> = Arc::clone(&ranking_barrier);
+       let ranking_barrier_clone: Arc<RankingBarrier> = Arc::clone(&ranking_barrier);
        let handle = spawn(move || {
            println!("Waiting for barrier to open from thread {}",i);
            let arrival = ranking_barrier_clone.wait(i);
