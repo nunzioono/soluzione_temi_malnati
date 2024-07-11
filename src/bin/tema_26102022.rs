@@ -76,28 +76,42 @@
 //
 // Si implementi tale componente a scelta nei linguaggi C++ o Rust:
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::fmt::Display;
+use std::sync::{Arc, Condvar, Mutex};
+use std::hash::Hash;
 
-pub struct ParallelCache {
-    map: Mutex<HashMap<(u32,fn(u32)->u32),u32>>,
+pub struct ParallelCache<K, V> 
+where K: Eq + Hash + Clone, V: Display {
+    map: Mutex<(HashMap<(K, fn(K) -> V), Arc<V>>, bool)>,
+    condvar: Condvar,
 }
 
-impl ParallelCache {
-    
-    pub fn new() -> ParallelCache {
+impl<K, V> ParallelCache<K, V> 
+where K: Eq + Hash + Clone, V: Display {
+    pub fn new() -> ParallelCache<K, V> {
         ParallelCache {
-            map: Mutex::new(HashMap::new())
+            map: Mutex::new((HashMap::new(), false)),
+            condvar: Condvar::new(),
         }
     }
 
-    pub fn get(&self, input: u32, function: fn(u32)->u32) -> u32 {
-        let mut map = self.map.lock().unwrap(); 
-        map.entry((input,function))
-            .and_modify(|result| {
-                println!("Found the result {} already in the cache!",result);
-            })
-            .or_insert(function(input));
-        return map[&(input,function)];
+    pub fn get(&self, input: K, function: fn(K) -> V) -> Arc<V> {
+
+        let mut guard = self.condvar.wait_while(self.map.lock().unwrap(), |map| {
+            !map.0.contains_key(&(input.clone(), function)) && map.1
+        }).unwrap();
+
+        let contains_key = guard.0.contains_key(&(input.clone(), function));
+        if !contains_key {
+            guard.1 = true;
+            guard.0.insert((input.clone(), function), Arc::new(function(input.clone())));
+            guard.1 = false;
+            self.condvar.notify_all();
+        } else {
+            println!("Found already in cache: {}", guard.0.get(&(input.clone(), function)).unwrap());
+        }
+
+        return Arc::clone(guard.0.get(&(input, function)).unwrap());
     }
 }
 
@@ -136,7 +150,7 @@ mod test {
         }
 
         for handle in handles {
-            handle.join();
+            handle.join().unwrap();
         }
     }
 }
