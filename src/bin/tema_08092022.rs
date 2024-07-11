@@ -99,64 +99,58 @@
 // Subscription non deve impedire al Dispatcher di consegnare ulteriori messaggi alle eventuali altre
 // Subscription presenti.
 // Si implementino le strutture dati Dispatcher e Subscription, a scelta, nel linguaggio Rust o C++11.
-use std::sync::mpsc::{ Sender, Receiver, channel };
-use std::ops::DerefMut;
+use std::sync::mpsc::{ channel, Receiver, Sender };
 
-#[derive(Clone)]
-struct Msg<T: Clone> {
-    pub message: T
+#[derive(Clone, Debug)]
+struct Msg<T: Clone + Sync + 'static> {
+    message: T
 }
 
-struct Dispatcher<T: Clone + DerefMut>{
-    senders_subs: Vec<Sender<Msg<T>>>, 
+struct Subscription<T: Clone + Sync + 'static> {
+    receiver: Receiver<Msg<T>>
 }
-//trait `DerefMut` is required to modify through a dereference, but it is no
-//t implemented for `Arc<Dispatcher<String>>`
 
-impl<T:Clone + DerefMut> Dispatcher<T> {
+impl <T: Clone + Sync + 'static> Subscription<T> {
+    fn read(&self) -> Option<Msg<T>> {
+        if let Ok(msg) = self.receiver.recv() {
+            Some(msg)
+        } else {
+            None
+        }
+    }
+}
 
-    pub fn new() -> Dispatcher<T> {
+struct Dispatcher<T: Clone + Sync + 'static> {
+    senders: Vec<Sender<Msg<T>>>
+}
+
+impl <T: Clone + Sync + 'static> Dispatcher<T> {
+    fn new() -> Self {
         Dispatcher {
-            senders_subs: Vec::new()
+            senders: vec![]
         }
     }
 
-    pub fn dispatch(&mut self, msg: Msg<T>) {
-        for sender in self.senders_subs.iter_mut() {
-            let _ = sender.send(msg.clone());
+    fn dispatch(&mut self, msg: Msg<T>) {
+        for sender in self.senders.iter() {
+            sender.send(msg.clone()).unwrap();
         }
     }
 
-    pub fn subscribe(&mut self) -> Subscription<T> {
-        let (sender, receiver) = channel::<Msg<T>>();
-        self.senders_subs.push(sender);
+    fn subscribe(&mut self) -> Subscription<T> {
+        let (sender, receiver) = channel();
+        self.senders.push(sender);
         Subscription {
             receiver
         }
     }
-
 }
 
-struct Subscription<T: Clone> {
-    receiver: Receiver<Msg<T>>,
-}
 
-impl<T: Clone> Subscription<T> {
 
-    pub fn read(&self) -> Option<Msg<T>> {
-        if let Ok(msg) = self.receiver.recv() {
-            return Some(msg);
-        } else {
-            return None;
-        }
-    }
-
-}
-
-use std::thread::{ sleep, spawn };
+use std::thread::spawn;
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::time::Duration;
 
 
 pub fn main() {
@@ -164,7 +158,7 @@ pub fn main() {
     let mut receivers_handles = vec![];
 
     for i in 0..5 {
-        let mut dispatcher_clone: Arc<RwLock<Dispatcher<_>>> = Arc::clone(&dispatcher);
+        let dispatcher_clone: Arc<RwLock<Dispatcher<_>>> = Arc::clone(&dispatcher);
         let mut dispatcher_unlocked = dispatcher_clone.write().unwrap();
         let sub = dispatcher_unlocked.subscribe();
         let handle = spawn(move || { 
@@ -186,7 +180,7 @@ pub fn main() {
     dispatcher.dispatch(msg);
 
     for handle in receivers_handles {
-        handle.join();
+        handle.join().unwrap();
     }
 
 }
